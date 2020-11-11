@@ -1,0 +1,265 @@
+---
+title: "CoPlots_Nvec_Bonacolta"
+author: "Anthony Bonacolta"
+date: "12/9/2019"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE, echo=FALSE}
+library("phyloseq"); packageVersion("phyloseq")
+library("ggplot2"); packageVersion("ggplot2")
+library("ape"); packageVersion("ape")
+library("vegan"); packageVersion("vegan"); citation("vegan")
+library("dplyr")
+library("scales")
+library("grid")
+library("reshape2")
+library("edgeR")
+library("plyr")
+library("tidyr")
+library("viridis")
+library("DESeq2"); packageVersion("DESeq2")
+library("gridExtra")
+library("microbiome"); packageVersion("microbiome")
+```
+# Load Data into Phyloseq
+```{r,echo=FALSE}
+SV <- read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/feature-tableNvec_new2.txt", row.names = 1, header = TRUE)
+tax <-as.matrix(read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/tax-no-MitoChNvec_ps_new.txt", row.names = 1, header = FALSE, sep = "\t"))
+tree_file <-read_tree("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/tree.nwk")
+colnames(tax) <- c ("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+tax[tax==""] <- NA
+map <- read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/16S_metadata_tab_phyloseq_new.txt", sep ="\t", row.names = 1, header = TRUE)
+ps = phyloseq(otu_table(SV, taxa_are_rows=TRUE), 
+               sample_data(map), 
+               tax_table(tax),
+                 phy_tree(tree_file))
+ps
+```
+
+# Filter low abundance OTUs
+```{r}
+ps_filtered <- prune_taxa(taxa_sums(ps) > 6, ps)
+ps_filtered
+```
+
+# CLR transform
+```{r}
+ps_clr <- microbiome::transform(ps_filtered, 'clr', shift = 1)
+```
+
+# Ordinate
+```{r}
+sample_data(ps_clr)$Individual <- factor(sample_data(ps_clr)$Individual, levels = c("1", "2", "3", "4", "5", "6"))
+                                         
+psr_clr.ord <- ordinate(ps_clr, "RDA", "euclidean")
+PCA = plot_ordination(ps_clr, psr_clr.ord, 
+                                shape="Individual",
+                                color="Tissue",
+                                title="Aitchison Distance PCA") +
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")) + scale_shape_manual(values = c(0,1,2,5,6,7)) + theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5)
+
+PCA
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Aitchison_PCA_new.tiff", units="in", width=7, height=5, res=300)
+plot(PCA)
+dev.off()
+```
+
+
+
+# Compute Dissim Measures
+```{r}
+dis <- vegdist(otu_table(ps_clr)[0:18], method ="euclidean")
+# PERMDISP2 procedure for the analysis of multivariate homogeneity of group dispersions (variances).
+mod <- betadisper(dis, sample_data(ps_clr)$Tissue)
+mod
+anova(mod)
+adonis(dis~ps_clr@sam_data$Tissue)
+ano<-anosim(dis, ps_clr@sam_data$Tissue, permutations=999)
+ano
+plot(ano)
+```
+```{r}
+dist.clr <- dist(otu_table(ps_clr)[0:18], method ="euclidean")
+mod <- betadisper(dist.clr, sample_data(ps_clr)$Tissue)
+mod
+anova(mod)
+adonis(dist.clr~ps_clr@sam_data$Tissue)
+ano<-anosim(dist.clr, ps_clr@sam_data$Tissue, permutations=999)
+ano
+plot(ano)
+ano$signif
+```
+
+
+
+```{r}
+mod_dist= as.data.frame(mod$distances)
+mod_dist_df=cbind(sample_data(ps_clr), mod_dist)
+df <- data.frame(distances = mod$distances, group = ps_clr@sam_data$Tissue)
+mod.aov <- aov(distances ~ group, data = df)
+TukeyHSD(mod)
+```
+```{r}
+anosim(dist.clr, ps_clr@sam_data$Tissue, permutations = 999)
+```
+
+```{r}
+tiss <- map$Tissue
+adonis(dist.clr~tiss, pairwise = TRUE, permutations = 9999, method="euclidean")
+ado <-adonis(dist.clr~tiss, pairwise = TRUE, permutations = 9999, method="euclidean")
+```
+
+
+
+```{r}
+permutest(mod, pairwise = TRUE, permutations = 999)
+```
+
+
+```{r}
+mod_dist= as.data.frame(mod$distances)
+mod_dist_df=cbind(sample_data(ps_clr), mod_dist)
+
+cbPalette <- c( "#009E73","#696969", "#D55E00")
+
+mod_dist_df$Tissue <- factor(mod_dist_df$Tissue, levels = c("Capitulum",
+                                                         "Mesenteries","Physa"))
+
+pal_box = ggplot(mod_dist_df,
+       aes(x=map$Tissue, y=mod$distances)) +
+geom_boxplot(aes(color=map$Tissue)) +
+scale_color_manual(values = cbPalette) +
+theme_linedraw() +
+theme_classic() +
+ylab("Distance to Centroid") +
+theme(legend.text =element_text(size=5)) +
+theme(legend.title = element_text(size=6)) +
+theme(axis.title.x = element_text(size = 7)) +
+theme(axis.title.y = element_text(size = 7)) +
+theme(axis.text.x = element_text(size =5)) +
+theme(axis.text.y = element_text(size =5)) 
+
+pal_box
+```
+
+```{r, echo=FALSE, message=FALSE, include=FALSE}
+library("PhyloMeasures")
+
+POCA = ordinate(ps_clr, method = "PCoA", distance = "bray")
+POCA_un = ordinate(ps_clr, method = "PCoA", distance = "unifrac")
+NMDS= ordinate(ps_clr, method = "NMDS" , distance = "bray")
+NMDS_un= ordinate(ps_clr, method = "NMDS" , distance = "unifrac")
+CCA= ordinate(ps_clr, method="PCoA", distance="euclidean" )
+
+plot_ordination(ps_clr, CCA, label = "Individual", color = "Tissue")  + geom_point(size = 3, alpha = 1)+theme_bw() +stat_ellipse(geom = "polygon", type="norm", alpha=0.2, aes(color=Tissue, fill=Tissue))
+```
+
+
+
+# OLD
+# Betadisperser
+```{r, warning=FALSE}
+DESeq_map <-read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/DESeq_map.txt", sep ="\t", row.names = 1, header = TRUE)
+deseq_counts <- DESeqDataSetFromMatrix(SV[,-19], colData =DESeq_map, design = ~Tissue)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+euc_clust <- hclust(euc_dist, method="ward.D2")
+```
+```{r}
+```
+
+
+```{r}
+anova(betadisper(euc_dist, map$Tissue))
+adonis(euc_dist~map$Tissue, permutations=9999)
+```
+
+
+
+## Visualize PCoA
+```{r}
+sample_data(ps)$Individual <- factor(
+  sample_data(ps)$Individual, 
+  levels = c("1", "2", "3", "4", "5", "6")
+)
+Nvec_pcoa <- ordinate(
+  physeq = ps, 
+  method = "PCoA", 
+  distance = "bray"
+)
+
+plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Tissue",
+  shape = "Individual",
+  title = "Bray-Curtis PCoA"
+) + 
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")
+  ) + scale_shape_manual(values = c(0,1,2,5,6,7))+ theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5)
+```
+
+```{r}
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Bray_PCoA_new.tiff", units="in", width=7, height=5, res=300)
+plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Tissue",
+  shape = "Individual",
+  title = "Bray-Curtis PCoA"
+) + 
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")
+  ) + scale_shape_manual(values = c(0,1,2,5,6,7))+ theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5)
+dev.off()
+```
+
+
+
+
+
+
+
+
+## PCA
+```{r, message=FALSE}
+library(ALDEx2);
+packageVersion("ALDEx2")
+library(CoDaSeq)
+packageVersion("CoDaSeq")
+
+d.czm.all <- cmultRepl(SV[1:18], method="CZM", label=0)
+d.clr.all <- codaSeq.clr(d.czm.all)
+E.clr <- t(d.clr.all)
+d.pcx <- prcomp(E.clr)
+
+dist.clr <- dist(E.clr)
+```
+```{r}
+tiss <- map$Tissue
+ano <- anosim(dist.clr, tiss, permutations=9999)
+ano
+```
+```{r}
+plot(ano)
+```
+```{r}
+df_out <- as.data.frame(d.pcx$x)
+p<-ggplot(df_out,aes(x=PC1,y=PC2,fill=factor(map$Individual),shape=map$Tissue))
+p<-p+geom_point(size=3, position=position_jitter(h=0.1, w=0.1))+
+  scale_shape_manual(values=c(21,24,22), name = "Tissue") +scale_fill_viridis_d(option="magma", name = "Individual") +
+  guides(fill = guide_legend(override.aes=list(shape=21))) + ggtitle("PCA of Nematostella vectensis Bacterial Communities") + annotate("text", x=35, y=75, label="Tissue ANOSIM = 0.1483 \n (9999 Permutations)") +theme_bw()
+p
+```

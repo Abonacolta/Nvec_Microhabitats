@@ -1,0 +1,899 @@
+---
+title: "16S_Nvec_10272019"
+author: "Anthony_Bonacolta"
+date: "10/20/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, include=FALSE, echo=FALSE}
+library("phyloseq"); packageVersion("phyloseq")
+library("ggplot2"); packageVersion("ggplot2")
+library("ape"); packageVersion("ape")
+library("vegan"); packageVersion("vegan")
+library("dplyr")
+library("scales")
+library("grid")
+library("reshape2")
+library("edgeR")
+library("plyr")
+library("tidyr")
+library("viridis")
+library("DESeq2")
+library("gridExtra")
+```
+# Load Data into Phyloseq
+```{r,echo=FALSE}
+SV <- read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/feature-tableNvec_new.txt", row.names = 1, header = TRUE)
+tax <-as.matrix(read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/tax-no-MitoChNvec_ps_new.txt", row.names = 1, header = FALSE, sep = "\t"))
+tree_file <-read_tree("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/tree.nwk")
+colnames(tax) <- c ("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+tax[tax==""] <- NA
+map <- read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/16S_metadata_tab_phyloseq_new_revised.txt", sep ="\t", row.names = 1, header = TRUE)
+ps = phyloseq(otu_table(SV, taxa_are_rows=TRUE), 
+               sample_data(map), 
+               tax_table(tax),
+                 phy_tree(tree_file))
+ps
+```
+
+# Decontaminate
+```{r}
+library(decontam); packageVersion("decontam")
+head(sample_data(ps))
+sample_data(ps)$is.neg <- sample_data(ps)$Sample_or_Control == "Control Sample"
+contamdf.prev <- isContaminant(ps, method="prevalence", neg="is.neg")
+table(contamdf.prev$contaminant)
+```
+**5 OTUs are negatives**
+```{r}
+head(which(contamdf.prev$contaminant))
+```
+identify as contaminants all sequences thare are more prevalent in negative controls than in positive samples
+54- Actinomyces
+75- Lactobacillus
+95- Alcaligenes
+265- Prevotellaceae
+565- Porphyromonas
+
+```{r}
+contamdf.prev05 <- isContaminant(ps, method="prevalence", neg="is.neg", threshold=0.5)
+table(contamdf.prev05$contaminant)
+```
+### Remove contaminants
+
+```{r}
+ps.noncontam <- prune_taxa(!contamdf.prev05$contaminant, ps)
+ps.noncontam
+```
+## Just make it the real one
+```{r}
+ps <- ps.noncontam
+ps = subset_samples(ps, Sample_or_Control != "Control Sample")
+ps
+```
+
+
+# PCoA Plots
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+ord.PCoA.brayP <- ordinate(ps, method="PCoA", distance="bray")
+plot_ordination(ps, ord.PCoA.brayP, color="Tissue", label = "Sample")
+PCoATissueWneg <- plot_ordination(ps, ord.PCoA.brayP, color="Tissue", label = "Sample")
+svg(filename="/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/PCoATissue.svg")
+plot(PCoATissueWneg)
+dev.off()
+```
+# Species Richness
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+plot_richness(ps, x="Tissue", color="Tissue",
+              measures=c("Simpson", "Shannon")) + geom_point()
+richness <- plot_richness(ps, x="Tissue", color="Tissue",
+              measures=c("Simpson", "Shannon")) + geom_point()
+svg(filename="/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/richness.svg")
+plot(richness)
+dev.off()
+jpeg(filename="/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/richness.jpeg")
+plot(richness)
+dev.off()
+```
+
+# Abundance Figures
+## Phylum Level
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Nvec_phylum <- ps %>%
+  tax_glom(taxrank = "Phylum") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.02) %>%                         # Filter out low abundance taxa
+  arrange(Phylum)  
+phylum_colors <- c(
+  "#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+   "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861"
+)
+
+Tissue.labs <- c("Capitulum", "Mesenteries", "Physa")
+names(Tissue.labs) <- c("capitulum", "mesenteries", "physa")
+
+
+ggplot(Nvec_phylum, aes(x = Individual, y = Abundance, fill = Phylum)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = phylum_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Phyla > 2%) \n") +
+  ggtitle("Phylum Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+```
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message = FALSE}
+Phylum_comp <- ggplot(Nvec_phylum, aes(x = Individual, y = Abundance, fill = Phylum)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = phylum_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Phyla > 2%) \n") +
+  ggtitle("Phylum Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Revised_Phylum_comp.tiff", units="in", width=5, height=5, res=300)
+plot(Phylum_comp)
+dev.off()
+```
+## Class
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Nvec_class <- ps%>%
+  tax_glom(taxrank = "Class") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.02) %>%                         # Filter out low abundance taxa
+  arrange(Class) 
+
+class_colors <- c(
+  "#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+   "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861"
+)
+ggplot(Nvec_class, aes(x = Individual, y = Abundance, fill = Class)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = class_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Class > 2%) \n") +
+  ggtitle("Class Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+```
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message = FALSE}
+Class_comp <- ggplot(Nvec_class, aes(x = Individual, y = Abundance, fill = Class)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = class_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Class > 2%) \n") +
+  ggtitle("Class Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Revised_Class_comp.tiff", units="in", width=5, height=5, res=300)
+plot(Class_comp)
+dev.off()
+```
+## Order
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Nvec_order <- ps %>%
+  tax_glom(taxrank = "Order") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.02) %>%                         # Filter out low abundance taxa
+  arrange(Order) 
+Order_colors <- c(
+  "cyan3", "mediumorchid4", "dodgerblue", "mediumpurple1", "mediumorchid3", "tan1", "slateblue3", "tomato", "slateblue1","aquamarine", "mediumorchid1", "tan4", "darkcyan", "dodgerblue2","cadetblue3", "mediumpurple2","mediumpurple3", "mediumpurple4","palegreen3", "darkslategray4"
+)
+ggplot(Nvec_order, aes(x = Individual, y = Abundance, fill = Order)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = Order_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Order > 2%) \n") +
+  ggtitle("Order Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+```
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message = FALSE}
+Order_comp <- ggplot(Nvec_order, aes(x = Individual, y = Abundance, fill = Order)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = Order_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Order > 2%) \n") +
+  ggtitle("Order Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Order_comp_new.tiff", units="in", width=7, height=5, res=300)
+plot(Order_comp)
+dev.off()
+```
+## Family
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Nvec_Family <- ps %>%
+  tax_glom(taxrank = "Family") %>%                     # agglomerate at phylum level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > 0.05) %>%                         # Filter out low abundance taxa
+  arrange(Family) 
+Family_colors <- c(
+  "#CBD588", "#5F7FC7", "orange","#DA5724", "#508578", "#CD9BCD",
+   "#AD6F3B", "#673770","#D14285", "#652926", "#C84248", 
+  "#8569D5", "#5E738F","#D1A33D", "#8A7C64", "#599861", "chocolate1", "beige", "coral", "cyan1", "purple"
+)
+ggplot(Nvec_Family, aes(x = Individual, y = Abundance, fill = Family)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = Family_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Family > 5%) \n") +
+  ggtitle("Family Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+```
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+Family_comp <- ggplot(Nvec_Family, aes(x = Individual, y = Abundance, fill = Family)) + 
+  facet_grid(Tissue~., labeller = labeller(Tissue = Tissue.labs)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = Family_colors) +
+  scale_x_discrete(
+    breaks = c("1", "2", "3", "4", "5", "6"),
+    labels = c("1", "2", "3", "4", "5", "6"), 
+    drop = FALSE
+  ) +
+  # Remove x axis title
+  xlab("Individual") +
+  #
+  guides(fill = guide_legend(reverse = TRUE, keywidth = 1, keyheight = 1)) +
+  ylab("Relative Abundance (Family > 5%) \n") +
+  ggtitle("Family Composition of Nematostella vectensis \n Bacterial Communities by Tissue Compartment")
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Revised_Family_comp.tiff", units="in", width=7, height=5, res=300)
+plot(Family_comp)
+dev.off()
+```
+# Fixed PCoA
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+sample_data(ps)$Individual <- factor(
+  sample_data(ps)$Individual, 
+  levels = c("1", "2", "3", "4", "5", "6")
+)
+Nvec_pcoa <- ordinate(
+  physeq = ps, 
+  method = "PCoA", 
+  distance = "bray"
+)
+
+plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Individual",
+  shape = "Tissue",
+  title = "PCoA of Nematostella vectensis Bacterial Communities"
+) + 
+  scale_color_manual(values = c("#a65628", "red", "#ffae19",
+    "#4daf4a", "#1919ff", "darkorchid3", "magenta")
+  ) +
+  geom_point(aes(color = Individual), alpha = 0.7, size = 4) +
+  geom_point(colour = "grey90", size = 1.5) 
+```
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+BrayPCoA_NVec <- plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Individual",
+  shape = "Tissue",
+  title = "PCoA of Nematostella vectensis Bacterial Communities"
+) + 
+  scale_color_manual(values = c("#a65628", "red", "#ffae19",
+    "#4daf4a", "#1919ff", "darkorchid3", "magenta")
+  ) +
+  geom_point(aes(color = Individual), alpha = 0.7, size = 4) +
+  geom_point(colour = "grey90", size = 1.5) 
+svg(filename="/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/BrayPCoA_NVec.svg")
+plot(BrayPCoA_NVec)
+dev.off()
+png(filename="/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/BrayPCoA_NVec.png")
+plot(BrayPCoA_NVec)
+dev.off()
+```
+
+## PERMANOVA
+```{r, echo=FALSE, warning=FALSE}
+Nvec_bray <- phyloseq::distance(ps, method = "bray")
+
+# make a data frame from the sample_data
+sampledf <- data.frame(sample_data(ps))
+
+# Adonis test
+adonis(Nvec_bray ~ Tissue, data = sampledf)
+
+```
+## Pie Charts
+```{r, echo=FALSE, include=FALSE, warning=FALSE, message = FALSE}
+phyla_counts_tab <- otu_table(tax_glom(ps, taxrank="Phylum")) 
+phyla_tax_vec <- as.vector(tax_table(tax_glom(ps, taxrank="Phylum"))[,2]) 
+rownames(phyla_counts_tab) <- as.vector(phyla_tax_vec)
+unclassified_tax_counts <- colSums(SV) - colSums(phyla_counts_tab)
+phyla_and_unidentified_counts_tab <- rbind(phyla_counts_tab, "Unclassified"=unclassified_tax_counts)
+temp_major_taxa_counts_tab <- phyla_and_unidentified_counts_tab[!row.names(phyla_and_unidentified_counts_tab) %in% "Proteobacteria", ]
+class_counts_tab <- otu_table(tax_glom(ps, taxrank="Class"))
+class_tax_phy_tab <- tax_table(tax_glom(ps, taxrank="Class"))
+phy_tmp_vec <- class_tax_phy_tab[,2]
+class_tmp_vec <- class_tax_phy_tab[,3]
+rows_tmp <- row.names(class_tax_phy_tab)
+class_tax_tab <- data.frame("Phylum"=phy_tmp_vec, "Class"=class_tmp_vec, row.names = rows_tmp)
+proteo_classes_vec <- as.vector(class_tax_tab[class_tax_tab$Phylum == "Proteobacteria", "Class"])
+rownames(class_counts_tab) <- as.vector(class_tax_tab$Class) 
+proteo_class_counts_tab <- class_counts_tab[row.names(class_counts_tab) %in% proteo_classes_vec, ]
+proteo_no_class_annotated_counts <- phyla_and_unidentified_counts_tab[row.names(phyla_and_unidentified_counts_tab) %in% "Proteobacteria", ] - colSums(proteo_class_counts_tab)
+major_taxa_counts_tab <- rbind(temp_major_taxa_counts_tab, proteo_class_counts_tab, "Unresolved_Proteobacteria"=proteo_no_class_annotated_counts)
+identical(colSums(major_taxa_counts_tab), colSums(SV))
+major_taxa_proportions_tab <- apply(major_taxa_counts_tab, 2, function(x) x/sum(x)*100)
+dim(major_taxa_proportions_tab)
+temp_filt_major_taxa_proportions_tab <- data.frame(major_taxa_proportions_tab[apply(major_taxa_proportions_tab, 1, max) > 5, ])
+dim(temp_filt_major_taxa_proportions_tab) 
+filtered_proportions <- colSums(major_taxa_proportions_tab) - colSums(temp_filt_major_taxa_proportions_tab)
+filt_major_taxa_proportions_tab <- rbind(temp_filt_major_taxa_proportions_tab, "Other"=filtered_proportions)
+filt_major_taxa_proportions_tab_for_plot <- filt_major_taxa_proportions_tab
+filt_major_taxa_proportions_tab_for_plot$Major_Taxa <- row.names(filt_major_taxa_proportions_tab_for_plot)
+filt_major_taxa_proportions_tab_for_plot.g <- gather(filt_major_taxa_proportions_tab_for_plot, Sample, Proportion, -Major_Taxa)
+head(filt_major_taxa_proportions_tab_for_plot.g)
+head(filt_major_taxa_proportions_tab_for_plot)
+sample_info_for_merge<-data.frame("Sample"=map$ID, "Tissue"=map$Tissue, "Individual"=map$Individual, stringsAsFactors=F)
+filt_major_taxa_proportions_tab_for_plot.g2 <- merge(filt_major_taxa_proportions_tab_for_plot.g, sample_info_for_merge)
+```
+
+## Capitulum
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Cap_sample_IDs <- row.names(map)[map$Tissue == "capitulum"]
+filt_major_taxa_proportions_cap_only_tab_for_plot.g <- filt_major_taxa_proportions_tab_for_plot.g2[filt_major_taxa_proportions_tab_for_plot.g2$Sample %in% Cap_sample_IDs, ]
+Cap_sample_major_taxa_proportion_tab <- acast(filt_major_taxa_proportions_cap_only_tab_for_plot.g[, c(1:3)], Major_Taxa ~ Sample)
+Cap_sample_summed_major_taxa_proportions_vec <- rowSums(Cap_sample_major_taxa_proportion_tab)
+Cap_sample_major_taxa_summary_tab <- data.frame("Major_Taxa"=names(Cap_sample_summed_major_taxa_proportions_vec), "Proportion"=Cap_sample_summed_major_taxa_proportions_vec, row.names=NULL)
+ggplot(data.frame(Cap_sample_major_taxa_summary_tab), aes(x="Capitulum samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Capitulum") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+```
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Cap_pie <- ggplot(data.frame(Cap_sample_major_taxa_summary_tab), aes(x="Capitulum samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Capitulum") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Cap_pie.tiff", units="in", width=6, height=5, res=300)
+plot(Cap_pie)
+dev.off()
+```
+
+## Mesenteries
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Mes_sample_IDs <- row.names(map)[map$Tissue == "mesenteries"]
+filt_major_taxa_proportions_mes_only_tab_for_plot.g <- filt_major_taxa_proportions_tab_for_plot.g2[filt_major_taxa_proportions_tab_for_plot.g2$Sample %in% Mes_sample_IDs, ]
+Mes_sample_major_taxa_proportion_tab <- acast(filt_major_taxa_proportions_mes_only_tab_for_plot.g[, c(1:3)], Major_Taxa ~ Sample)
+Mes_sample_summed_major_taxa_proportions_vec <- rowSums(Mes_sample_major_taxa_proportion_tab)
+Mes_sample_major_taxa_summary_tab <- data.frame("Major_Taxa"=names(Mes_sample_summed_major_taxa_proportions_vec), "Proportion"=Mes_sample_summed_major_taxa_proportions_vec, row.names=NULL)
+ggplot(data.frame(Mes_sample_major_taxa_summary_tab), aes(x="Mesentery samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Mesenteries") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+```
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Mes_pie <- ggplot(data.frame(Mes_sample_major_taxa_summary_tab), aes(x="Mesentery samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Mesenteries") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Mes_pie.tiff", units="in", width=6, height=5, res=300)
+plot(Mes_pie)
+dev.off()
+```
+
+## Physa
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Phy_sample_IDs <- row.names(map)[map$Tissue == "physa"]
+filt_major_taxa_proportions_phy_only_tab_for_plot.g <- filt_major_taxa_proportions_tab_for_plot.g2[filt_major_taxa_proportions_tab_for_plot.g2$Sample %in% Phy_sample_IDs, ]
+Phy_sample_major_taxa_proportion_tab <- acast(filt_major_taxa_proportions_phy_only_tab_for_plot.g[, c(1:3)], Major_Taxa ~ Sample)
+Phy_sample_summed_major_taxa_proportions_vec <- rowSums(Phy_sample_major_taxa_proportion_tab)
+Phy_sample_major_taxa_summary_tab <- data.frame("Major_Taxa"=names(Phy_sample_summed_major_taxa_proportions_vec), "Proportion"=Phy_sample_summed_major_taxa_proportions_vec, row.names=NULL)
+ggplot(data.frame(Phy_sample_major_taxa_summary_tab), aes(x="Physa samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Physa") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+```
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Phy_pie <- ggplot(data.frame(Phy_sample_major_taxa_summary_tab), aes(x="Physa samples", y=Proportion, fill=Major_Taxa)) + 
+  geom_bar(width=1, stat="identity") +
+  coord_polar("y") +
+  scale_fill_viridis(discrete=TRUE) +
+  ggtitle("Physa") +
+  theme_void() +
+  theme(plot.title = element_text(hjust=0.5), legend.title=element_blank())
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Phy_pie.tiff", units="in", width=6, height=5, res=300)
+plot(Phy_pie)
+dev.off()
+```
+# Betadisperser
+```{r, echo=FALSE, warning=FALSE}
+DESeq_map <-read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/DESeq_map.txt", sep ="\t", row.names = 1, header = TRUE)
+deseq_counts <- DESeqDataSetFromMatrix(SV[,-19], colData =DESeq_map, design = ~Tissue)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+euc_clust <- hclust(euc_dist, method="ward.D2")
+plot(euc_clust)
+```
+```{r}
+anova(betadisper(euc_dist, map$Tissue))
+adonis(euc_dist~map$Tissue)
+```
+## Visualize PERMANOVA
+```{r, echo=FALSE}
+vst_pcoa <- ordinate(ps, method="MDS", distance="euclidean")
+
+plot_ordination(
+  physeq = ps,
+  ordination = vst_pcoa,
+  color = "Individual",
+  shape = "Tissue",
+  title = "PCoA of Nematostella vectensis Bacterial Communities"
+) + 
+  scale_color_manual(values = c("#a65628", "red", "#ffae19",
+    "#4daf4a", "#1919ff", "darkorchid3", "magenta")
+  ) +
+  geom_point(aes(color = Individual), alpha = 0.7, size = 4) +
+  geom_point(colour = "grey90", size = 1.5) + 
+  annotate("text", x=40000, y=40000, label="Tissue Regions") +
+  annotate("text", x=40000, y=36000, label="Permutational ANOVA = 0.041*")
+
+```
+```{r, echo=FALSE}
+PCoA_Euc <- plot_ordination(
+  physeq = ps,
+  ordination = vst_pcoa,
+  color = "Individual",
+  shape = "Tissue",
+  title = "PCoA of Nematostella vectensis Bacterial Communities"
+) + 
+  scale_color_manual(values = c("#a65628", "red", "#ffae19",
+    "#4daf4a", "#1919ff", "darkorchid3", "magenta")
+  ) +
+  geom_point(aes(color = Individual), alpha = 0.7, size = 4) +
+  geom_point(colour = "grey90", size = 1.5) + 
+  annotate("text", x=40000, y=40000, label="Tissue Regions") +
+  annotate("text", x=40000, y=36000, label="Permutational ANOVA = 0.041*")
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/PCoA_Euc.tiff", units="in", width=7, height=5, res=300)
+plot(PCoA_Euc)
+dev.off()
+```
+
+# MicroBiomeSeq Analysis for Alpha and Beta Diversity Measures
+
+```{r, echo=FALSE, warning=FALSE, message = FALSE, include=FALSE}
+library(devtools)
+library(phyloseq)
+library(microbiomeSeq)
+library(ggplot2)
+physeq = ps
+```
+
+# Alpha Diversity with ANOVA (P<0.05)
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+Alpha_ANOVA <- plot_anova_diversity(physeq, method = c("richness", "simpson", "shannon"), 
+    grouping_column = "Tissue", pValueCutoff = 0.05)
+print(Alpha_ANOVA)
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Alpha_ANOVA.tiff", units="in", width=7, height=5, res=300)
+plot(Alpha_ANOVA)
+dev.off()
+```
+
+## Differentially abundant taxa 
+### Between Tissue compartmen, corresponding adjusted p-values and rank of importance as detected by random forest classifier.
+
+```{r, echo=FALSE, warning=FALSE, message = FALSE, fig.width=5,fig.height=5}
+physeq2 <- taxa_level(physeq, "Phylum")
+deseq_sig <- differential_abundance(physeq2, grouping_column = "Tissue", output_norm = "log-relative", 
+    pvalue.threshold = 0.05, lfc.threshold = 0, filename = F)
+diff_Phy <- plot_signif(deseq_sig$plotdata, top.taxa = 5)
+print(diff_Phy)
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/diff_Phy.tiff", units="in", width=7, height=8, res=300)
+plot(diff_Phy)
+dev.off()
+```
+
+#### Very little or no Lentisphaerae in Capitulum Samples
+
+## Mean Decrease Accuracy
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+MDA <- plot_MDA(deseq_sig$importance)
+print(MDA)
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/MDA.tiff", units="in", width=7, height=5, res=300)
+plot(MDA)
+dev.off()
+```
+
+### Factor in Abundance 
+```{r, echo=FALSE, warning=FALSE, message = FALSE}
+MA <- plot_MA(deseq_sig$SignFeaturesTable)
+print(MA$lfcplot)
+
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/MA.tiff", units="in", width=7, height=8, res=300)
+plot(MA$lfcplot)
+dev.off()
+```
+ 
+ 
+ **Down reg are more common in Cap, Up reg are more common in other compartments**
+ 
+ 
+```{r}
+library("ampvis2")
+if(!require("devtools"))
+  install.packages("devtools")
+#source the phyloseq_to_ampvis2() function from the gist
+devtools::source_gist("8d0ca4206a66be7ff6d76fc4ab8e66c6")
+ampvis2_obj <- phyloseq_to_ampvis2(ps)
+```
+ 
+ 
+```{r}
+hm <- amp_heatmap(ampvis2_obj, group_by = "Tissue", tax_aggregate = "Family", tax_show = 9)+theme_classic()+labs(title="Read Abundance for Top Bacterial Families", subtitle="Divided by Tissue Compartment")
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/hm.tiff", units="in", width=8, height=5, res=300)
+plot(hm)
+dev.off()
+```
+ 
+```{r}
+library(ALDEx2);
+packageVersion("ALDEx2")
+library(CoDaSeq)
+packageVersion("CoDaSeq")
+
+d.czm.all <- cmultRepl(SV[1:18], method="CZM", label=0)
+d.clr.all <- codaSeq.clr(d.czm.all)
+E.clr <- t(d.clr.all)
+d.pcx <- prcomp(E.clr)
+
+dist.clr <- dist(E.clr)
+```
+```{r}
+tiss <- map$Tissue
+ano <- anosim(dist.clr, tiss, permutations=9999)
+ano
+```
+```{r}
+plot(ano)
+```
+```{r}
+df_out <- as.data.frame(d.pcx$x)
+p<-ggplot(df_out,aes(x=PC1,y=PC2,fill=factor(map$Individual),shape=map$Tissue))
+p<-p+geom_point(size=3, position=position_jitter(h=0.1, w=0.1))+
+  scale_shape_manual(values=c(21,24,22), name = "Tissue") +scale_fill_viridis_d(option="magma", name = "Individual") +
+  guides(fill = guide_legend(override.aes=list(shape=21))) + ggtitle("PCA of Nematostella vectensis Bacterial Communities") + annotate("text", x=35, y=75, label="Tissue ANOSIM = 0.1483 \n (9999 Permutations)") +theme_bw()
+p
+
+#tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/PCA_Ait.tiff", units="in", width=7, height=5, res=300)
+#plot(p)
+#dev.off()
+```
+
+# Differential Abundance
+
+```{r}
+library("microbiome"); packageVersion("microbiome")
+library(exactRankTests)
+library(nlme)
+library(dplyr)
+library(ggplot2)
+library(compositions)
+library(ancom.R)
+```
+```{r}
+ps_filtered <- prune_taxa(taxa_sums(ps) > 6, ps)
+ps_filtered
+ps_clr <- microbiome::transform(ps_filtered, 'clr', shift = 1)
+```
+
+```{r}
+feature_table_pre_process = function(feature_table, meta_data, sample_var, group_var = NULL, 
+                                     out_cut = 0.05, zero_cut = 0.90, lib_cut = 200, neg_lb){
+  feature_table = data.frame(feature_table, check.names = FALSE)
+  meta_data = data.frame(meta_data, check.names = FALSE)
+  # Drop unused levels
+  meta_data[] = lapply(meta_data, function(x) if(is.factor(x)) factor(x) else x)
+  # Match sample IDs between metadata and feature table
+  sample_ID = intersect(meta_data[, sample_var], colnames(feature_table))
+  feature_table = feature_table[, sample_ID]
+  meta_data = meta_data[match(sample_ID, meta_data[, sample_var]), ]
+  
+  # 1. Identify outliers within each taxon
+  if (!is.null(group_var)) {
+    group = meta_data[, group_var]
+    z = feature_table + 1 # Add pseudo-count (1) 
+    f = log(z); f[f == 0] = NA; f = colMeans(f, na.rm = T)
+    f_fit = lm(f ~ group)
+    e = rep(0, length(f)); e[!is.na(group)] = residuals(f_fit)
+    y = t(t(z) - e)
+    
+    outlier_check = function(x){
+      # Fitting the mixture model using the algorithm of Peddada, S. Das, and JT Gene Hwang (2002)
+      mu1 = quantile(x, 0.25, na.rm = T); mu2 = quantile(x, 0.75, na.rm = T)
+      sigma1 = quantile(x, 0.75, na.rm = T) - quantile(x, 0.25, na.rm = T); sigma2 = sigma1
+      pi = 0.75
+      n = length(x)
+      epsilon = 100
+      tol = 1e-5
+      score = pi*dnorm(x, mean = mu1, sd = sigma1)/((1 - pi)*dnorm(x, mean = mu2, sd = sigma2))
+      while (epsilon > tol) {
+        grp1_ind = (score >= 1)
+        mu1_new = mean(x[grp1_ind]); mu2_new = mean(x[!grp1_ind])
+        sigma1_new = sd(x[grp1_ind]); if(is.na(sigma1_new)) sigma1_new = 0
+        sigma2_new = sd(x[!grp1_ind]); if(is.na(sigma2_new)) sigma2_new = 0
+        pi_new = sum(grp1_ind)/n
+        
+        para = c(mu1_new, mu2_new, sigma1_new, sigma2_new, pi_new)
+        if(any(is.na(para))) break
+        
+        score = pi_new * dnorm(x, mean = mu1_new, sd = sigma1_new)/
+          ((1-pi_new) * dnorm(x, mean = mu2_new, sd = sigma2_new))
+        
+        epsilon = sqrt((mu1 - mu1_new)^2 + (mu2 - mu2_new)^2 + 
+                         (sigma1 - sigma1_new)^2 + (sigma2 - sigma2_new)^2 + (pi - pi_new)^2)
+        mu1 = mu1_new; mu2 = mu2_new; sigma1 = sigma1_new; sigma2 = sigma2_new; pi = pi_new
+      }
+      
+      if(mu1 + 1.96 * sigma1 < mu2 - 1.96 * sigma2){
+        if(pi < out_cut){
+          out_ind = grp1_ind
+        }else if(pi > 1 - out_cut){
+          out_ind = (!grp1_ind)
+        }else{
+          out_ind = rep(FALSE, n)
+        }
+      }else{
+        out_ind = rep(FALSE, n)
+      }
+      return(out_ind)
+    }
+    out_ind = matrix(FALSE, nrow = nrow(feature_table), ncol = ncol(feature_table))
+    out_ind[, !is.na(group)] = t(apply(y, 1, function(i) 
+      unlist(tapply(i, group, function(j) outlier_check(j)))))
+    
+    feature_table[out_ind] = NA
+  }
+  
+  # 2. Discard taxa with zeros  >=  zero_cut
+  zero_prop = apply(feature_table, 1, function(x) sum(x == 0, na.rm = T)/length(x[!is.na(x)]))
+  taxa_del = which(zero_prop >= zero_cut)
+  if(length(taxa_del) > 0){
+    feature_table = feature_table[- taxa_del, ]
+  }
+  
+  # 3. Discard samples with library size < lib_cut
+  lib_size = colSums(feature_table, na.rm = T)
+  if(any(lib_size < lib_cut)){
+    subj_del = which(lib_size < lib_cut)
+    feature_table = feature_table[, - subj_del]
+    meta_data = meta_data[- subj_del, ]
+  }
+  
+  # 4. Identify taxa with structure zeros
+  if (!is.null(group_var)) {
+    group = factor(meta_data[, group_var])
+    present_table = as.matrix(feature_table)
+    present_table[is.na(present_table)] = 0
+    present_table[present_table != 0] = 1
+    
+    p_hat = t(apply(present_table, 1, function(x)
+      unlist(tapply(x, group, function(y) mean(y, na.rm = T)))))
+    samp_size = t(apply(feature_table, 1, function(x)
+      unlist(tapply(x, group, function(y) length(y[!is.na(y)])))))
+    p_hat_lo = p_hat - 1.96 * sqrt(p_hat * (1 - p_hat)/samp_size)
+    
+    struc_zero = (p_hat == 0) * 1
+    # Whether we need to classify a taxon into structural zero by its negative lower bound?
+    if(neg_lb) struc_zero[p_hat_lo <= 0] = 1
+    
+    # Entries considered to be structural zeros are set to be 0s
+    struc_ind = struc_zero[, group]
+    feature_table = feature_table * (1 - struc_ind)
+    
+    colnames(struc_zero) = paste0("structural_zero (", colnames(struc_zero), ")")
+  }else{
+    struc_zero = NULL
+  }
+  
+  # 5. Return results
+  res = list(feature_table = feature_table, meta_data = meta_data, structure_zeros = struc_zero)
+  return(res)
+}
+```
+
+```{r}
+feature_table = ps@otu_table; sample_var = "Sample"; group_var = "Tissue"
+meta_data = ps@sam_data
+out_cut = 0.05; zero_cut = 0.90; lib_cut = 200; neg_lb = FALSE
+prepro = feature_table_pre_process(feature_table, meta_data, sample_var, group_var, 
+                                   out_cut, zero_cut, lib_cut, neg_lb)
+feature_table = prepro$feature_table # Preprocessed feature table
+meta_data = prepro$meta_data # Preprocessed metadata
+struc_zero = prepro$structure_zeros # Structural zero info
+```
+
+```{r}
+main_var = "Tissue"; p_adj_method = "BH"; alpha = 0.05
+#feature_table = t(SV)
+#write.csv(feature_table,"/Users/anthonybonacolta/Box/Nvec_Microbiome/feature_table.csv")
+feature_table <- read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/feature_table.csv",sep = ",", row.names = 1, header = T)
+res = ANCOM(feature_table, sig=0.05,multcorr = 3, tau = 0.02, theta = 0.1)
+plot_ancom(res)
+write.csv(res$detected, "/Users/anthonybonacolta/Box/Nvec_Microbiome/ANCOM.csv")
+```
+
+## New PCOA plots
+
+# Filter low abundance OTUs
+```{r}
+ps_filtered <- prune_taxa(taxa_sums(ps) > 6, ps)
+ps_filtered
+```
+
+# CLR transform
+```{r}
+ps_clr <- microbiome::transform(ps_filtered, 'clr', shift = 1)
+```
+# Ordinate
+```{r}
+sample_data(ps_clr)$Individual <- factor(sample_data(ps_clr)$Individual, levels = c("1", "2", "3", "4", "5", "6"))
+                                         
+psr_clr.ord <- ordinate(ps_clr, "RDA", "euclidean")
+PCA = plot_ordination(ps_clr, psr_clr.ord, 
+                                shape="Individual",
+                                color="Tissue",
+                                title="Aitchison Distance PCA") +
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")) + scale_shape_manual(values = c(0,1,2,5,6,7)) + theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5)
+
+PCA
+```
+
+```{r}
+dist.clr <- dist(otu_table(ps_clr)[0:18], method ="euclidean")
+anosim(dist.clr, ps_clr@sam_data$Tissue, permutations = 999)
+```
+# Betadisperser
+```{r, warning=FALSE}
+DESeq_map <-read.table("/Users/anthonybonacolta/Box/Nvec_Microbiome/R_data/DESeq_map.txt", sep ="\t", row.names = 1, header = TRUE)
+deseq_counts <- DESeqDataSetFromMatrix(SV[,-19], colData =DESeq_map, design = ~Tissue)
+deseq_counts_vst <- varianceStabilizingTransformation(deseq_counts)
+vst_trans_count_tab <- assay(deseq_counts_vst)
+euc_dist <- dist(t(vst_trans_count_tab))
+euc_clust <- hclust(euc_dist, method="ward.D2")
+```
+
+
+## Visualize PCoA
+```{r}
+sample_data(ps)$Individual <- factor(
+  sample_data(ps)$Individual, 
+  levels = c("1", "2", "3", "4", "5", "6")
+)
+Nvec_pcoa <- ordinate(
+  physeq = ps, 
+  method = "PCoA", 
+  distance = "bray"
+)
+
+plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Tissue",
+  label = "Individual",
+  title = "Bray-Curtis PCoA"
+) + 
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")
+  ) +  theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5, label= "Individual")
+```
+
+```{r}
+tiff("/Users/anthonybonacolta/Box/Nvec_Microbiome/Figures/TIFF/Bray_PCoA_new.tiff", units="in", width=7, height=5, res=300)
+plot_ordination(
+  physeq = ps,
+  ordination = Nvec_pcoa,
+  color = "Tissue",
+  label = "Individual",
+  title = "Bray-Curtis PCoA"
+) + 
+  scale_color_manual(values = c("darkgreen", "navyblue", "purple")
+  ) +  theme_bw() +
+  geom_point(aes(color = Tissue), alpha = 0.7, size = 5, label= "Individual")
+dev.off()
+```
+
+
+
+
+
+
+
+
+
